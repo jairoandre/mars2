@@ -105,6 +105,9 @@ class Surface(
     val planeSegments: List<SurfaceSegment> = segments.filter { it.isPlane() }
 }
 
+const val MAX_X = 6999f
+const val MIN_X = 0f
+
 class State(
     val surface: Surface,
     val lander: Lander
@@ -117,7 +120,8 @@ class State(
         surface.segments.forEach { seg ->
             if (seg.crash(lander)) return Float.MIN_VALUE
         }
-        return 0f
+        if (lander.pos.x > MAX_X || lander.pos.x < MIN_X) return Float.MIN_VALUE
+        return lander.fuel
     }
 }
 
@@ -126,4 +130,8 @@ class State(
 class Gene(
     val a: Double = Math.random(),
     val b: Double = Math.random()
+)
+
+class Genome(
+    val genes: Array<Gene> = Array(20) { Gene() }
 )
