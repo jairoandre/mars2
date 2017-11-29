@@ -37,6 +37,7 @@ fun Float.atan2(x: Float) = Math.atan2(this.toDouble(), x.toDouble()).toFloat()
 fun Float.toDegrees() = (this * Math.PI / 180).toFloat()
 fun Float.toRadians() = (this * 180 / Math.PI).toFloat()
 fun Float.abs() = Math.abs(this)
+fun Double.toRandomInt(max: Int) = (this * max).toInt()
 
 class Point(
     val x: Float,
@@ -53,8 +54,8 @@ class Point(
 }
 
 class Action(
-    val power: Float,
-    val angle: Float
+    val power: Int,
+    val angle: Int
 )
 
 class Lander(
@@ -64,13 +65,20 @@ class Lander(
     val rotate: Float,
     val power: Float
 ) {
-    fun copy(pos: Point = this.pos, vel: Point = this.vel, fuel: Float = this.fuel, rotate: Float = this.rotate, power: Float = this.power) = Lander(pos, vel, fuel, rotate, power)
-    fun update() = copy(pos = Point(pos.x + vel.x, pos.y + vel.y), fuel = fuel - power)
+    private fun copy(pos: Point = this.pos, vel: Point = this.vel, fuel: Float = this.fuel, rotate: Float = this.rotate, power: Float = this.power) = Lander(pos, vel, fuel, rotate, power)
+    /**
+     * Return a copy of this lander with position, fuel updated.
+     */
+    fun update(time: Float) = copy(pos = Point(pos.x + vel.x * time, pos.y + vel.y * time), fuel = (fuel - power * time).coerceAtLeast(0f))
+
+    /**
+     * Return a copy of this lander with velocity, rotate and power updated by a thrust.
+     */
     fun thrust(action: Action): Lander {
-        val power = action.power.coerceIn(0f, 4f)
-        val angle = (action.angle.coerceIn(-15f, 15f) + rotate).coerceIn(-90f, 90f)
-        val accel = Point(power, angle.toRadians())
-        val composed = accel.add(gravitForce).toCartesian()
+        val power = action.power.toFloat()
+        val angle = (action.angle + rotate).coerceIn(-90f..90f)
+        val acceleration = Point(power, angle.toRadians())
+        val composed = acceleration.add(gravitForce).toCartesian()
         return copy(vel = composed, rotate = angle, power = power)
     }
 }
@@ -108,30 +116,94 @@ class Surface(
 const val MAX_X = 6999f
 const val MIN_X = 0f
 
+enum class LanderStatus { FLYING, LANDED, DEAD }
 class State(
     val surface: Surface,
     val lander: Lander
 ) {
-    fun nextState(action: Action) = State(surface, lander.thrust(action).update())
-    fun evaluate() : Float {
-        surface.planeSegments.forEach { plane ->
-            if (plane.isLanded(lander)) return Float.MAX_VALUE
+    var status: LanderStatus
+
+    init {
+        status = when (true) {
+            isDead() -> LanderStatus.DEAD
+            isLanded() -> LanderStatus.LANDED
+            else -> LanderStatus.FLYING
         }
-        surface.segments.forEach { seg ->
-            if (seg.crash(lander)) return Float.MIN_VALUE
-        }
-        if (lander.pos.x > MAX_X || lander.pos.x < MIN_X) return Float.MIN_VALUE
-        return lander.fuel
     }
+
+    fun nextState(action: Action): State =
+        State(surface, lander.thrust(action).update(1f))
+
+
+    fun isDead() = checkOut() || surface.segments.map { it.crash(lander) }.reduce { acc, curr -> acc || curr }
+    fun isLanded() = surface.planeSegments.map { it.isLanded(lander) }.reduce { acc, curr -> acc || curr }
+
+    fun computeStates(actions: List<Action>): State {
+        var current = this
+        for (action in actions) {
+            if (current.status == LanderStatus.FLYING) current = current.nextState(action) else break
+        }
+        return current
+    }
+
+    fun evaluateDistance(): Float =
+        surface.planeSegments.map {
+            when (true) {
+                it.inRangeX(lander.pos) -> lander.pos.y - it.a.y
+                lander.pos.x < it.a.x -> lander.pos.distance(it.a)
+                else -> lander.pos.distance(it.b)
+            }
+        }.reduce { acc, curr -> if (acc < curr) acc else curr }
+
+
+    fun evaluate(): Float = when (true) {
+        isDead() -> Float.MIN_VALUE
+        isLanded() -> Float.MAX_VALUE
+        else -> evaluateDistance()
+    }
+
+    fun checkOut() = lander.pos.x > MAX_X || lander.pos.x < MIN_X
 }
 
 // GA
 
+const val GENOME_SIZE = 6
+const val POPULATION_SIZE = 100
+const val GENERATIONS = 5
+
+val possibleTilts = (-15..15).toList()
+val possibleTiltsSize = possibleTilts.size
+val possibleThrusts = (0..4).toList()
+val possibleThrustsSize = possibleThrusts.size
+
 class Gene(
     val a: Double = Math.random(),
     val b: Double = Math.random()
-)
+) {
+    fun toAction() = Action(possibleTilts[a.toRandomInt(possibleTiltsSize)], possibleThrusts[b.toRandomInt(possibleThrustsSize)])
+
+}
 
 class Genome(
-    val genes: Array<Gene> = Array(20) { Gene() }
-)
+    val genes: Array<Gene> = Array(GENOME_SIZE) { Gene() }
+) {
+    fun toActions() = genes.map { it.toAction() }
+}
+
+class GenomeState(val initialState: State,val genome: Genome) {
+    var result = 0f
+    fun simulate() {
+        result = initialState.computeStates(genome.toActions()).evaluate()
+    }
+}
+
+class GARunner(initState: State) {
+
+    var population = Array(POPULATION_SIZE) { GenomeState(initState, Genome()) }
+
+    fun run() {
+
+
+    }
+
+}
