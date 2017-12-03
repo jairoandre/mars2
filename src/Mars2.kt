@@ -9,258 +9,416 @@ import java.math.*
 fun main(args: Array<String>) {
     val input = Scanner(System.`in`)
     val surfaceN = input.nextInt() // the number of points used to draw the surface of Mars.
-    val points = (0 until surfaceN).map { Point(input.nextDouble(), input.nextDouble()) }
-    val surface = Surface((1 until points.size).map { idx -> SurfaceSegment(points[idx - 1], points[idx]) })
-
-    debug("${gravitForce.toCartesian()}")
+    val points = (0 until surfaceN).map { _ -> Point(input.nextDouble(), input.nextDouble()) }
+    val surface = Line(points)
 
     // game loop
+    var count = 0
+    var commands = emptyList<State>()
     while (true) {
-        val lander = Lander(
-            pos = Point(input.nextDouble(), input.nextDouble()),
-            vel = Point(input.nextDouble(), input.nextDouble()),
-            fuel = input.nextInt(),
-            rotate = input.nextInt(),
-            power = input.nextInt()
-        )
+        val X = input.nextDouble()
+        val Y = input.nextDouble()
+        val hSpeed = input.nextDouble() // the horizontal speed (in m/s), can be negative.
+        val vSpeed = input.nextDouble() // the vertical speed (in m/s), can be negative.
+        val fuel = input.nextInt() // the quantity of remaining fuel in liters.
+        val rotate = input.nextInt() // the rotation angle in degrees (-90 to 90).
+        val power = input.nextInt() // the thrust power (0 to 4).
+        val state = State(
+            fuel = fuel,
+            angle = rotate,
+            power = power,
+            particule = particule(X, Y, speed(hSpeed, vSpeed)))
+
+        // Write an action using println()
+        // To debug: System.err.println("Debug messages...");
+        if (count == 0)
+            commands = GARunner(state, surface).run()
+
+        commands[count].apply { println("${this.angle} ${this.power}") }
+        count += 1
+
+
         // rotate power. rotate is the desired rotation angle. power is the desired thrust power.
-        val gaRunner = GARunner(State(surface, lander))
-        gaRunner.run()
     }
 }
 
-val gravitForce = Point(3.711, 270.0.toRadians())
-
-fun Double.sqr() = this * this
-fun Double.sqrt() = Math.sqrt(this)
-fun Double.cos() = Math.cos(this)
-fun Double.sin() = Math.sin(this)
-fun Double.atan2(x: Double) = Math.atan2(this, x)
-fun Double.toRadians() = this * Math.PI / 180
-fun Double.toDegrees() = this * 180 / Math.PI
-fun Double.abs() = Math.abs(this)
-fun Double.toRandomInt(max: Int) = (this * max).toInt()
-
-class Point(
-    val x: Double,
-    val y: Double
+class GARunner(
+    val initialState: State,
+    val ground: Line
 ) {
-    fun add(point: Point) = Point(x + point.x, y + point.y)
-    fun sub(point: Point) = Point(x - point.x, y - point.y)
-    fun mag2() = x.sqr() + y.sqr()
-    fun mag() = mag2().sqrt()
-    fun distance2(point: Point) = sub(point).mag2()
-    fun distance(point: Point) = distance2(point).sqrt()
-    fun toPolar() = Point(mag(), y.atan2(x))
-    fun toCartesian() = Point(x * y.cos(), x * y.sin())
-    override fun toString(): String = "($x, $y)"
-}
-
-class Action(
-    val angle: Int,
-    val power: Int
-) {
-    fun print() = println("$angle $power")
-}
-
-class Lander(
-    val pos: Point,
-    val vel: Point,
-    val fuel: Int,
-    val rotate: Int,
-    val power: Int
-) {
-    private fun copy(pos: Point = this.pos, vel: Point = this.vel, fuel: Int = this.fuel, rotate: Int = this.rotate, power: Int = this.power) = Lander(pos, vel, fuel, rotate, power)
-    /**
-     * Return a copy of this lander with position, fuel updated.
-     */
-    fun update(time: Double) = copy(pos = Point(pos.x + vel.x * time, pos.y + vel.y * time), fuel = (fuel - power * time).toInt().coerceAtLeast(0))
-
-    /**
-     * Return a copy of this lander with velocity, rotate and power updated by a thrust.
-     */
-    fun thrust(action: Action): Lander {
-        val newPower = power + (action.power - power).coerceIn(-1..1)
-        val newRotate = rotate + (action.angle - rotate).coerceIn(-15..15)
-        val acceleration = Point(newPower.toDouble(), (90.0 - newRotate).toRadians())
-        val composed = acceleration.add(gravitForce).toCartesian()
-        return copy(vel = composed, rotate = newRotate, power = newPower)
+    fun run(): List<State> {
+        val chimp = findBestChimp(this::createMarsLander2FromGenome, this::marsLander2Fitness)
+        return chimp.result.trajectory.drop(1)
     }
 
-    override fun toString(): String =
-        "Pos: ${pos.x}, ${pos.y} || Fuel: $fuel || Vel: ${vel.x} ${vel.y}"
-}
+    fun createMarsLander2FromGenome(genome: Array<Gene>): Lander {
+        var previousPower = initialState.power
+        var previousAngle = initialState.angle
 
-class SurfaceSegment(
-    val a: Point,
-    val b: Point
-) {
-    val polar = b.sub(a).toPolar()
-    fun inRangeX(point: Point) = a.x >= point.x && b.x <= point.x
-    fun yForX(x: Double) = x * polar.y.sin() / polar.y.cos()
-    fun isBellowLine(point: Point) = point.y < yForX(point.x)
-    fun isAboveLine(point: Point) = point.y > yForX(point.x)
-    fun isInLine(point: Point) = point.y == yForX(point.x)
-    fun isPlane() = a.y == b.y
-    fun isLanded(lander: Lander) = isPlane() && lander.pos.y == a.y && lander.vel.x.abs() <= 20 && lander.vel.y.abs() <= 40 && lander.rotate == 0
-    fun crash(lander: Lander): Boolean {
-        return if (inRangeX(lander.pos)) {
-            val y = yForX(lander.pos.x)
-            if (y == lander.pos.y) {
-                lander.vel.x.abs() > 20 || lander.vel.y.abs() > 40 || lander.rotate != 0
-            } else y > lander.pos.y
-        } else {
-            false
+        val ret = mutableListOf<ControlCmd>()
+        (1..genomeSize).forEach {
+            val power = (previousPower + genome[it - 1].b.asIntInRange(-1..1)).coerceIn(0..4)
+            val angle = (previousAngle + genome[it - 1].a.asIntInRange(-15..15)).coerceIn(-90..90)
+            ret.add(ControlCmd(power, 0))
+            previousPower = power
+            previousAngle = angle
+        }
+        return Lander(initialState, ret, ground)
+    }
+
+    fun marsLander2Fitness(lander: Lander) = when (lander.flystate) {
+        FlyState.Landed -> lander.trajectory.last().fuel.toDouble() * 10
+        FlyState.Flying -> -lander.ground.landingZoneDistanceTo(lander.trajectory.last().position)
+        FlyState.Crashed -> with(lander.trajectory.last()) {
+            -lander.ground.landingZoneDistanceTo(position) - speed.xSpeed - speed.ySpeed
         }
     }
-
-    override fun toString(): String =
-        "Surface from $a to $b"
 }
 
-class Surface(
-    val segments: List<SurfaceSegment>
-) {
-    val planeSegments: List<SurfaceSegment> = segments.filter { it.isPlane() }
+
+fun cos(v: Double) = Math.cos(v)
+fun sin(v: Double) = Math.sin(v)
+fun sqrt(v: Double) = Math.sqrt(v)
+fun toDegrees(v: Double) = v * 180 / Math.PI
+fun toRadians(v: Double) = v * Math.PI / 180
+fun random() = Math.random()
+fun debug(any: Any) = System.err.println(any.toString())
+fun Double.asInt(max: Int) = (this * (max + 1)).toInt()
+fun Double.asIntInRange(range: IntRange) = range.first + (this * (range.last - range.first + 1)).toInt()
+/**
+ * A point in a 2 dimensions cartesian system.
+ * Point + Vector -> Point
+ * Point - Point  -> Vector
+ */
+data class Point(val x: Double, val y: Double) {
+
+    infix operator fun plus(vector: Vector) = Point(x + vector.dx, y + vector.dy)
+    infix operator fun minus(point: Point) = Vector(x - point.x, y - point.y)
+
+    fun distanceTo(point: Point) = (point - this).length
+}
+
+/**
+ * Vector * Double -> Vector
+ * Vector + Vector -> Vector
+ */
+data class Vector(val dx: Double, val dy: Double) {
+
+    infix operator fun plus(vector: Vector) = Vector(dx + vector.dx, dy + vector.dy)
+    infix operator fun times(times: Double) = Vector(dx * times, dy * times)
+
+    fun rotate(angle: Angle) =
+        Vector(
+            dx * cos(angle.rad) - dy * sin(angle.rad),
+            dx * sin(angle.rad) + dy * cos(angle.rad)
+        )
+
+    val length: Double
+        get() = sqrt(dx * dx + dy * dy)
+}
+
+/**
+ * An angle that internally uses radian but can easily convert to degrees.
+ */
+data class Angle(val rad: Double) {
+    val deg: Double
+        get() = toDegrees(rad)
+}
+
+/**
+ * Extension on Int to create angle :  15.deg()
+ */
+fun Int.deg(): Angle = Angle(toRadians(this.toDouble()))
+
+
+/**
+ * A line is a List of point.
+ * It is comparable to point:   Line > Point
+ */
+data class Line(val points: List<Point>) {
+    val landingZone: Pair<Point, Point>
+    val ldx: Double
+    val ldy: Double
+    val lx2y1: Double
+    val ly2x1: Double
+    val ldx2: Double
+    val ldy2: Double
+    val lsqrt: Double
 
     init {
-        debug("$planeSegments")
+        if (points.size < 2)
+            error("Should have 2 points at minimum.")
+        landingZone = points.withIndex().first { it.value.y == points[it.index + 1].y }.let { it.value to points[it.index + 1] }
+        ldx = landingZone.second.x - landingZone.first.x
+        ldy = landingZone.second.y - landingZone.first.y
+        lx2y1 = landingZone.second.x * landingZone.first.y
+        ly2x1 = landingZone.second.y * landingZone.first.x
+        ldx2 = ldx * ldx
+        ldy2 = ldy * ldy
+        lsqrt = Math.sqrt(ldy2 + ldx2)
+
     }
+
+    fun landingZoneDistanceTo(p: Point) =
+        Math.abs(ldy * p.x - ldx * p.y + lx2y1 - ly2x1) / lsqrt
+
+
+    infix operator fun compareTo(point: Point) = (getYforX(point.x) - point.y).toInt()
+
+    fun isHorizontalAtX(x: Double) = getSegmentFor(x).let {
+        it.first.y == it.second.y
+    }
+
+    private fun getSegmentFor(x: Double) =
+        (1 until points.size).first {
+            points[it - 1].x <= x && x <= points[it].x
+        }.let {
+            Pair(points[it - 1], points[it])
+        }
+
+    private fun getYforX(x: Double) = getSegmentFor(x).let {
+        it.first.y + (x - it.first.x) * (it.second.y - it.first.y) / (it.second.x - it.first.x)
+    }
+
 }
 
-const val MAX_X = 6999f
-const val MIN_X = 0f
+data class Time(val sec: Double)
 
-enum class LanderStatus { FLYING, LANDED, DEAD }
-class State(
-    val surface: Surface,
-    val lander: Lander
-) {
-    var status: LanderStatus
+val Double.sec: Time
+    get() = Time(this)
+
+
+/**
+ * Speed is internally using a vector, allowing to compose it. speed12 = speed1 + speed2
+ */
+data class Speed(val direction: Vector) {
+
+    infix operator fun plus(speed: Speed) = Speed(direction + speed.direction)
+
+    val xSpeed: Double
+        get() = direction.dx
+
+    val ySpeed: Double
+        get() = direction.dy
+
+    override fun toString() = "(${xSpeed.format(2)}, ${ySpeed.format(2)})"
+}
+
+fun speed(xSpeed: Double, ySpeed: Double) = Speed(Vector(xSpeed, ySpeed))
+
+
+/**
+ * Acceleration is internally using a vector, allowing to compose it. acc12 = acc1 + acc2
+ * Acceleration * Time -> Speed
+ */
+data class Acceleration(val vector: Vector) {
+
+    infix operator fun times(time: Time) = Speed(vector * time.sec)
+
+    infix operator fun plus(acceleration: Acceleration) = Acceleration(vector + acceleration.vector)
+}
+
+fun acceleration(xAcc: Double, yAcc: Double) = Acceleration(Vector(xAcc, yAcc))
+
+
+/**
+ * Represent something with an initial point and speed and on which an acceleration can be applied.
+ */
+data class Particule(val position: Point, val speed: Speed) {
+
+    fun accelerate(acceleration: Acceleration, time: Time): Particule {
+        val newSpeed = speed + acceleration * time
+
+        val newPosition = position +
+            speed.direction * time.sec +
+            acceleration.vector * time.sec * time.sec * 0.5
+
+        return Particule(newPosition, newSpeed)
+    }
+
+    override fun toString() = " x=${position.x.format(2)} y=${position.y.format(2)} speed= $speed"
+}
+
+fun particule(x: Double, y: Double, s: Speed) = Particule(Point(x, y), s)
+
+fun Double.format(digits: Int) = java.lang.String.format("%.${digits}f", this)
+
+val GRAVITY = acceleration(0.0, -3.711)
+val maxX = 6999
+val minX = 0
+
+/**
+ * power : 0, 1, 2, 3, 4
+ * angle : -90, -75, ... , 0, +15, +30, ..., +75, +90
+ */
+data class ControlCmd(val power: Int = 0, val angle: Int = 0)
+
+data class State(val fuel: Int, val power: Int, val angle: Int, val particule: Particule) {
+    val position: Point
+        get() = particule.position
+
+    val speed: Speed
+        get() = particule.speed
+}
+
+enum class FlyState {
+    Landed, Crashed, Flying
+}
+
+/**
+ * Handle the physics (acceleration, speed, fuel, ...)
+ */
+class Lander(initState: State, val cmds: List<ControlCmd>, val ground: Line) {
+
+    val trajectory = mutableListOf(initState)
+    var flystate = FlyState.Flying
 
     init {
-        status = when (true) {
-            isDead() -> LanderStatus.DEAD
-            isLanded() -> {
-                debug("LANDED")
-                LanderStatus.LANDED
-            }
-            else -> LanderStatus.FLYING
+        computeTrajectory()
+    }
 
+    fun computeTrajectory() {
+        for ((i, cmd) in cmds.withIndex()) {
+            val nextState = trajectory[i].computeNextState(cmd)
+            trajectory.add(nextState)
+
+            if (evaluateOutside(nextState)) return
+            if (evaluateHitTheGround(nextState)) return
+            if (evaluateNoFuel(nextState)) return
         }
     }
 
-    private fun nextState(action: Action): State =
-        State(surface, lander.thrust(action).update(1.0))
-
-
-    private fun isDead() = checkOut() || surface.segments.map { it.crash(lander) }.reduce { acc, curr -> acc || curr }
-    private fun isLanded() = surface.planeSegments.map { it.isLanded(lander) }.reduce { acc, curr -> acc || curr }
-
-    fun computeStates(actions: List<Action>): State {
-        // debug("First state $lander")
-        var current = this
-        for (action in actions) {
-            if (current.status == LanderStatus.FLYING) current = current.nextState(action) else break
+    fun evaluateOutside(state: State): Boolean {
+        if (state.position.x > maxX || state.position.x < minX) {
+            flystate = FlyState.Crashed
+            return true
         }
-        // debug("Last state ${current.lander}")
-        return current
+        return false
     }
 
-    private fun checkOut() = lander.pos.x > MAX_X || lander.pos.x < MIN_X
+    fun evaluateHitTheGround(nextState: State): Boolean {
+        if (ground > nextState.position) {
+            if (nextState.angle == 0
+                && nextState.speed.ySpeed > -40
+                && nextState.speed.xSpeed.abs() <= 20
+                && ground.isHorizontalAtX(nextState.position.x))
+                flystate = FlyState.Landed
+            else
+                flystate = FlyState.Crashed
+            return true
+        }
+        return false
+    }
+
+    fun evaluateNoFuel(nextState: State): Boolean {
+        if (nextState.fuel <= 0) {
+            flystate = FlyState.Crashed
+            return true
+        }
+        return false
+    }
+
+    fun State.computeNextState(cmd: ControlCmd, time: Time = 1.0.sec): State {
+
+        val newAngle = angle + (cmd.angle - angle).coerceAtLeast(-15).coerceAtMost(15)
+        val newPower = power + (cmd.power - power).coerceAtMost(1).coerceAtLeast(-1)
+
+        val thrustAcceleration = Acceleration((Vector(0.0, 1.0) * newPower.toDouble()).rotate(newAngle.deg()))
+        val acceleration = GRAVITY + thrustAcceleration
+        val newParticule = particule.accelerate(acceleration, time)
+        val newFuel = fuel - newPower
+
+        return State(newFuel, newPower, newAngle, newParticule)
+    }
 }
+
+fun Double.abs(): Double = Math.abs(this)
 
 // GA
 
-const val GENOME_SIZE = 1200
-const val POPULATION_SIZE = 20
-const val GENERATIONS = 10
-const val ELITISM = true
-const val SELECTION_RATE = .4
-const val UNIFORM_RATE = .5
-const val MUTATION_RATE = .06
+val log = false
+val elitism = true
+val generationsCount = 10
+val populationSize = 30
+val genomeSize = 1200
 
-val possibleAngles = (-15..15).toList()
-val possibleAnglesSize = possibleAngles.size
-val possibleThrusts = (0..4).toList()
-val possibleThrustsSize = possibleThrusts.size
+var uniformRate = .5
+var mutationRate = .06
+var selectionRatio = .4
 
-class Gene(
-    private val a: Double = Math.random(),
-    private val b: Double = Math.random()
-) {
-    fun toAction() = Action(possibleAngles[a.toRandomInt(possibleAnglesSize)], possibleThrusts[b.toRandomInt(possibleThrustsSize)])
 
+data class Gene(val a: Double = random(), val b: Double = random()) {
+    /**
+     * Random int from 0 to max (inclusive)
+     */
+    fun aAsInt(max: Int) = (a * (max + 1)).toInt()
 }
 
-class Genome(
-    val genes: Array<Gene> = Array(GENOME_SIZE) { Gene() }
-) {
-    fun toActions() = genes.map { it.toAction() }
-
-    private fun mutate(gene: Gene): Gene = if (Math.random() <= MUTATION_RATE) Gene() else gene
-
-    fun crossover(partner: Genome): Genome {
-        val newGenes = Array(GENOME_SIZE) {
-            if (Math.random() <= UNIFORM_RATE) {
-                mutate(this.genes[it])
-            } else {
-                mutate(partner.genes[it])
-            }
-        }
-        return Genome(newGenes)
-    }
+class GenomeAndResult<out State>(val genome: Array<Gene>, create: (Array<Gene>) -> State) {
+    val result = create(genome)
 }
 
-class GenomeState(val initialState: State, val genome: Genome) {
+fun <T> findBestChimp(create: (Array<Gene>) -> T, fitness: (T) -> Double): GenomeAndResult<T> {
 
-    var fitness: Double? = null
-
-    fun simulate(): GenomeState {
-        val lastState = initialState.computeStates(genome.toActions())
-        fitness = when (lastState.status) {
-            LanderStatus.FLYING -> lastState.surface.planeSegments.first().a.y - lastState.lander.pos.y
-            LanderStatus.DEAD -> with(lastState.lander) { lastState.surface.planeSegments.first().a.y - pos.y + vel.y + 40 }
-            LanderStatus.LANDED -> lastState.lander.fuel.toDouble()
+    fun Array<GenomeAndResult<T>>.sortByFitness() =
+        this.apply {
+            sortBy { fitness(it.result) }
+            reverse()
+                .apply { if (log) debug(joinToString(separator = " ", transform = { g -> fitness(g.result).toInt().toString().padStart(5) })) }
         }
-        return this
-    }
 
+    val population = Array(populationSize, { GenomeAndResult(buildGenome(genomeSize), create) }).sortByFitness()
+
+    val chimpsFewGenerationsLater = (1..generationsCount)
+        .fold(population) { pop, _ ->
+            buildNextGeneration(pop, create).sortByFitness()
+        }
+
+    return chimpsFewGenerationsLater.first()
 }
 
-fun debug(msg: String) = System.err.println(msg)
+fun buildGenome(size: Int) = Array(size, { Gene() })
 
-class GARunner(private val initState: State) {
+fun <T> buildNextGeneration(population: Array<GenomeAndResult<T>>,
+                            create: (Array<Gene>) -> T): Array<GenomeAndResult<T>> {
 
-    var population = Array(POPULATION_SIZE) { GenomeState(initState, Genome()) }
+    val newPop = population.copyOf()
 
-    val elitismOffset = if (ELITISM) 0 else 1
+    val elitismOffset = if (elitism) 1 else 0
 
-    private fun select(population: List<GenomeState>): GenomeState {
-        population.forEachIndexed { i, sample ->
-            if (Math.random() <= SELECTION_RATE * (POPULATION_SIZE - i) / POPULATION_SIZE) {
-                return sample
-            }
-        }
-        return population.first()
+    (elitismOffset until population.size).forEach {
+        val genome1 = select(population).genome
+        val genome2 = select(population).genome
+        val genome = crossover(genome1, genome2)
+
+        mutate(genome)
+
+        newPop[it] = GenomeAndResult(genome, create)
     }
+    return newPop
+}
 
-    fun run() {
-        for (i in 0..GENERATIONS) {
-            population.forEach { it.simulate() }
-            debug(population.joinToString { genomeState ->  genomeState.fitness.toString() })
-            val orderedByFitness = population.sortedBy { it.fitness }.reversed().drop(elitismOffset)
-            val newPopulation = Array(POPULATION_SIZE) {
-                val genome1 = select(orderedByFitness).genome
-                val genome2 = select(orderedByFitness).genome
-                GenomeState(initState, genome1.crossover(genome2))
-            }
-            population = newPopulation
+fun <T> select(population: Array<T>): T {
+    for ((i, chimp) in population.withIndex()) {
+        if (random() <= selectionRatio * (population.size - i) / population.size) {
+            return chimp
         }
-        population.forEach { it.simulate() }
-        val best = population.sortedBy { it.fitness }.last()
-        best.genome.genes.first().toAction().print()
-
     }
+    return population.first()
+}
 
+fun crossover(genome1: Array<Gene>, genome2: Array<Gene>) =
+    Array(genome1.size, {
+        if (random() <= uniformRate)
+            genome1.get(it)
+        else
+            genome2.get(it)
+    })
+
+fun mutate(genome: Array<Gene>) {
+    for ((i, _) in genome.withIndex()) {
+        if (random() <= mutationRate) {
+            genome[i] = Gene()
+        }
+    }
 }
